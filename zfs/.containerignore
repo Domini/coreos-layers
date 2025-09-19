@@ -1,0 +1,3 @@
+.containerignore
+Containerfile*
+**/.placeholder
