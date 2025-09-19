@@ -1,0 +1,36 @@
+name: Publish packages
+on:
+  push:
+    tags:
+    - fedora-coreos-*
+    - fedora-coreos-*_zfs-*
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+jobs:
+  zfs-build-args:
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/fedora-coreos-') && contains(github.ref, '_zfs-') }}
+    runs-on: ubuntu-24.04
+    steps:
+    - id: generate-build-args
+      run: |
+        BASE_IMAGE="${GITHUB_REF_NAME%%_*}"
+        BASE_IMAGE_VERSION="${BASE_IMAGE#fedora-coreos-}"
+        ZFS_VERSION="${GITHUB_REF_NAME#*zfs-}"
+        printf 'BUILD_ARGS<<EOF\nBASE_IMAGE_VERSION=%s\nZFS_VERSION=%s\nEOF\n' "$BASE_IMAGE_VERSION" "$ZFS_VERSION" >>"$GITHUB_OUTPUT"
+    outputs:
+      build-args: ${{ steps.generate-build-args.outputs.BUILD_ARGS }}
+
+  zfs:
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/fedora-coreos-') && contains(github.ref, '_zfs-') }}
+    needs: zfs-build-args
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      runs-on: ubuntu-24.04
+      package: zfs
+      build-args: ${{ needs.zfs-build-args.outputs.build-args }}
+    secrets: inherit

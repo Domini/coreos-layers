@@ -1,0 +1,79 @@
+#   BASE_IMAGE_VERSION="$(curl https://builds.coreos.fedoraproject.org/streams/stable.json --silent | jq -r '.architectures.x86_64.artifacts.metal.release')"
+ARG BASE_IMAGE_VERSION
+#   ZFS_VERSION="$(URL="$(curl --head https://github.com/openzfs/zfs/releases/latest --output /dev/null --silent --write-out '%{redirect_url}')"; printf '%s' "${URL##*zfs-}")"
+ARG ZFS_VERSION
+ARG PARENT_IMAGE=quay.io/fedora/fedora-coreos:$BASE_IMAGE_VERSION
+
+FROM quay.io/fedora/fedora-coreos:$BASE_IMAGE_VERSION AS kernel-version
+
+RUN rpm --query --all --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' kernel >/var/kernel.version
+
+
+FROM registry.fedoraproject.org/fedora:${BASE_IMAGE_VERSION%%.*} AS builder
+ARG BASE_IMAGE_VERSION
+ARG ZFS_VERSION
+
+COPY --from=kernel-version /var/kernel.version /root/
+
+# https://openzfs.github.io/openzfs-docs/Developer%20Resources/Custom%20Packages.html
+# https://openzfs.github.io/openzfs-docs/Developer%20Resources/Building%20ZFS.html
+RUN --mount=type=tmpfs,target=/tmp \
+    curl "https://src.fedoraproject.org/rpms/fedora-repos/raw/f${BASE_IMAGE_VERSION%%.*}/f/fedora-updates-archive.repo" --output-dir /etc/yum.repos.d --remote-name --remote-time \
+ && dnf -y install \
+      autoconf \
+      automake \
+      dkms \
+      gcc \
+      jq \
+      "kernel-devel-$(cat /root/kernel.version)" \
+      kernel-rpm-macros \
+      libaio-devel \
+      libattr-devel \
+      libblkid-devel \
+      libffi-devel \
+      libtirpc-devel \
+      libtool \
+      libunwind-devel \
+      libuuid-devel \
+      make \
+      ncompress \
+      openssl \
+      openssl-devel \
+      python3 \
+      python3-cffi \
+      python3-devel \
+      python3-packaging \
+      python3-setuptools \
+      rpm-build \
+      systemd \
+      systemd-devel \
+      zlib-ng-compat-devel \
+ && curl "https://github.com/openzfs/zfs/releases/download/zfs-$ZFS_VERSION/zfs-$ZFS_VERSION.tar.gz" --location --output-dir /tmp --remote-name --remote-time \
+ && tar --extract --file /tmp/zfs-*.tar.gz --gzip --directory /root \
+ && pushd /root/zfs-* \
+ && ./configure -with-linux="/usr/src/kernels/$(cat /root/kernel.version)/" -with-linux-obj="/usr/src/kernels/$(cat /root/kernel.version)/" \
+ && make -j "$(nproc)" rpm-utils rpm-kmod \
+ && popd \
+ && dnf clean all \
+ && ls -Al /root/zfs-*/*.rpm
+
+
+FROM $PARENT_IMAGE
+ARG ZFS_VERSION
+
+RUN --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=builder,source="/root/zfs-$ZFS_VERSION",target="/tmp/zfs-$ZFS_VERSION",rw \
+    rm --verbose --force \
+      /tmp/zfs-*/zfs-test-*.rpm \
+      /tmp/zfs-*/*.src.rpm \
+      /tmp/zfs-*/*-debugsource-*.rpm \
+      /tmp/zfs-*/*-debuginfo-*.rpm \
+      /tmp/zfs-*/*-devel-*.rpm \
+ && rpm-ostree install -y /tmp/zfs-*/*.rpm \
+ && depmod -a "$(rpm --query --all --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}' kernel)" \
+ && printf 'zfs\n' >/etc/modules-load.d/zfs.conf \
+ && rm --recursive \
+      /var/cache \
+      /var/lib/pcp \
+      /var/log \
+ && ostree container commit
