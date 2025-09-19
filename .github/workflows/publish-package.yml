@@ -1,0 +1,101 @@
+name: Publish package
+on:
+  push:
+    tags:
+    - fedora-coreos-*_zfs-*
+env:
+  REGISTRY: ghcr.io
+  PACKAGE_NAME: zfs
+  REGISTRY_IMAGE: ghcr.io/domini/coreos-layers-zfs
+jobs:
+  build-and-upload-artifact:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-24.04
+        - ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - id: generate-build-args
+      run: |
+        BASE_IMAGE="${GITHUB_REF_NAME%%_*}"
+        BASE_IMAGE_VERSION="${BASE_IMAGE#fedora-coreos-}"
+        ZFS_VERSION="${GITHUB_REF_NAME#*zfs-}"
+        printf 'BUILD_ARGS<<EOF\nBASE_IMAGE_VERSION=%s\nZFS_VERSION=%s\nEOF\n' "$BASE_IMAGE_VERSION" "$ZFS_VERSION" >>"$GITHUB_OUTPUT"
+    - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+    - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - id: meta
+      uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+      with:
+        images: ${{ env.REGISTRY_IMAGE }}
+    - id: build-and-push
+      uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+      with:
+        context: ./${{ env.PACKAGE_NAME }}
+        file: ./${{ env.PACKAGE_NAME }}/Containerfile
+        build-args: ${{ steps.generate-build-args.outputs.BUILD_ARGS }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        labels: ${{ steps.meta.outputs.labels }}
+        tags: ${{ env.REGISTRY_IMAGE }}
+        outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+    - run: |
+        mkdir ${{ runner.temp }}/digests
+        DIGEST="${{ steps.build-and-push.outputs.digest }}"
+        touch "${{ runner.temp }}/digests/${DIGEST#sha256:}"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: digests-${{ matrix.os }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  merge-and-push-package:
+    runs-on: ubuntu-24.04
+    needs: build-and-upload-artifact
+    permissions:
+      packages: write
+      id-token: write
+    steps:
+    - uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+      with:
+        cosign-release: v2.6.0
+    - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+      with:
+        path: ${{ runner.temp }}/digests
+        pattern: digests-*
+        merge-multiple: true
+    - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+    - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - id: meta
+      uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+      with:
+        images: ${{ env.REGISTRY_IMAGE }}
+    - working-directory: ${{ runner.temp }}/digests
+      run: |
+        docker buildx imagetools create $(jq --compact-output --raw-output '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+          $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+    - id: inspect
+      run: |
+        docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }} | tee ${{ runner.temp }}/manifest
+
+        DIGEST="$(grep -E --max-count=1 --only-matching 'sha256:[^ ]+' ${{ runner.temp }}/manifest)"
+        printf 'DIGEST=%s\n' "$DIGEST" >>"$GITHUB_OUTPUT"
+    - env:
+        TAGS: ${{ steps.meta.outputs.tags }}
+        DIGEST: ${{ steps.inspect.outputs.DIGEST }}
+      shell: sh
+      run: printf '%s\n' "$TAGS" | xargs -I {} cosign sign --recursive --yes {}@$DIGEST
