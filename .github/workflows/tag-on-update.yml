@@ -1,0 +1,39 @@
+name: Tag on update
+on:
+  schedule:
+  - cron: '*/5 * * * *'
+jobs:
+  tag-on-update:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - id: generate-tags
+      run: |
+        BASE_IMAGE_VERSION="$(curl https://builds.coreos.fedoraproject.org/streams/stable.json --silent | jq -r '.architectures.x86_64.artifacts.metal.release')"
+        ZFS_URL="$(curl --head https://github.com/openzfs/zfs/releases/latest --output /dev/null --silent --write-out '%{redirect_url}')"
+        ZFS_VERSION="${ZFS_URL##*zfs-}"
+        printf 'TAG=%s\nZFS_TAG=%s\n' "fedora-coreos-$BASE_IMAGE_VERSION" "fedora-coreos-${BASE_IMAGE_VERSION}_zfs-$ZFS_VERSION" >>"$GITHUB_OUTPUT"
+    - id: tag-exists
+      run: |
+        HTTP_CODE="$(curl --head "https://github.com/Domini/coreos-layers/releases/tag/${{ steps.generate-tags.outputs.TAG }}" --output /dev/null --silent --write-out '%{http_code}')"
+        printf 'HTTP_CODE=%s\n' "$HTTP_CODE" >>"$GITHUB_OUTPUT"
+    - id: zfs-tag-exists
+      if: ${{ steps.tag-exists.outputs.HTTP_CODE == 404 }}
+      run: |
+        HTTP_CODE="$(curl --head "https://github.com/Domini/coreos-layers/releases/tag/${{ steps.generate-tags.outputs.ZFS_TAG }}" --output /dev/null --silent --write-out '%{http_code}')"
+        printf 'HTTP_CODE=%s\n' "$HTTP_CODE" >>"$GITHUB_OUTPUT"
+    - if: ${{ steps.zfs-tag-exists.outputs.HTTP_CODE == 404 }}
+      run: |
+        curl -X POST https://api.github.com/repos/Domini/coreos-layers/git/refs \
+          -H 'Authorization: Bearer ${{ secrets.RECURSIVE_ACTIONS }}' \
+          -H 'Accept: application/vnd.github+json' \
+          --data-raw '{"ref":"refs/tags/${{ steps.generate-tags.outputs.ZFS_TAG }}","sha":"${{ github.sha }}"}' \
+          --fail
+    - if: ${{ steps.tag-exists.outputs.HTTP_CODE == 404 }}
+      run: |
+        curl -X POST https://api.github.com/repos/Domini/coreos-layers/git/refs \
+          -H 'Authorization: Bearer ${{ secrets.RECURSIVE_ACTIONS }}' \
+          -H 'Accept: application/vnd.github+json' \
+          --data-raw '{"ref":"refs/tags/${{ steps.generate-tags.outputs.TAG }}","sha":"${{ github.sha }}"}' \
+          --fail
