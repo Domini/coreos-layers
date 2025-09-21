@@ -59,3 +59,20 @@ jobs:
       package: tmux
       build-args: ${{ needs.tmux-build-args.outputs.build-args }}
     secrets: inherit
+
+  zfs-tmux:
+    if: ${{ startsWith(github.ref, 'refs/tags/fedora-coreos-') && contains(github.ref, '_zfs-') }}
+    needs:
+    - zfs
+    #- tmux
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      runs-on: ubuntu-24.04
+      package: zfs-tmux
+      build-args: |
+        PARENT_IMAGE=ghcr.io/domini/coreos-layers-zfs:${{ github.ref_name }}
+    secrets: inherit
