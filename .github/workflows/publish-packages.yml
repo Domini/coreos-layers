@@ -34,3 +34,28 @@ jobs:
       package: zfs
       build-args: ${{ needs.zfs-build-args.outputs.build-args }}
     secrets: inherit
+
+  tmux-build-args:
+    if: ${{ startsWith(github.ref, 'refs/tags/fedora-coreos-') && !contains(github.ref, '_zfs-') }}
+    runs-on: ubuntu-24.04
+    steps:
+    - id: generate-build-args
+      run: |
+        BASE_IMAGE_VERSION="${GITHUB_REF_NAME#fedora-coreos-}"
+        printf 'BUILD_ARGS<<EOF\nBASE_IMAGE_VERSION=%s\nEOF\n' "$BASE_IMAGE_VERSION" >>"$GITHUB_OUTPUT"
+    outputs:
+      build-args: ${{ steps.generate-build-args.outputs.BUILD_ARGS }}
+
+  tmux:
+    if: ${{ startsWith(github.ref, 'refs/tags/fedora-coreos-') && !contains(github.ref, '_zfs-') }}
+    needs: tmux-build-args
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      runs-on: ubuntu-24.04
+      package: tmux
+      build-args: ${{ needs.tmux-build-args.outputs.build-args }}
+    secrets: inherit
